@@ -53,6 +53,7 @@ public class CrateKey implements ConfigBacked {
     private void load(@NotNull FileConfig config) throws IllegalStateException {
         this.setName(config.getString("Name", this.getId()));
         this.setVirtual(config.getBoolean("Virtual"));
+        this.setItemStackable(config.getBoolean("ItemStackable", false));
 
         if (config.contains("Item")) {
             NightItem item = config.getCosmeticItem("Item");
@@ -81,6 +82,7 @@ public class CrateKey implements ConfigBacked {
     private void write(@NotNull FileConfig config) {
         config.set("Name", this.name);
         config.set("Virtual", this.virtual);
+        config.set("ItemStackable", this.itemStackable);
         config.set("ItemData", this.item);
     }
 
@@ -156,31 +158,32 @@ public class CrateKey implements ConfigBacked {
     public ItemStack getItemStack(boolean fullData) {
         ItemStack item = ItemHelper.toItemStack(this.item);
         ItemUtil.editMeta(item, meta -> {
-            PDCUtil.set(meta, Keys.keyId, this.getId());
+            if (fullData) {
+                PDCUtil.set(meta, Keys.keyId, this.getId());
+                if (!this.isItemStackable()) meta.setMaxStackSize(1);
+            }
         });
 
-        if (!this.isVirtual()) {
+        if (fullData && !this.isVirtual() && !this.isItemStackable()) {
             this.plugin.getUuidAntiDupeManager().injectUuid(item);
         }
 
         try {
             java.util.UUID uuid = this.plugin.getUuidAntiDupeManager().getKeyUuid(item);
-            if (uuid != null) {
-                long created = this.plugin.getUuidAntiDupeManager().getCreationTime(uuid);
-                ItemReplacer.create(item)
-                    .readMeta()
-                    .replace(su.nightexpress.excellentcrates.Placeholders.KEY_UUID, () -> uuid.toString())
-                    .replace(su.nightexpress.excellentcrates.Placeholders.KEY_CREATION_TIME, () -> {
-                        if (created <= 0) return "-";
-                        java.time.format.DateTimeFormatter fmt = java.time.format.DateTimeFormatter.ofPattern(su.nightexpress.excellentcrates.config.Config.LOGS_DATE_FORMAT.get());
-                        return java.time.LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(created), java.time.ZoneId.systemDefault()).format(fmt);
-                    })
-                    .replace(su.nightexpress.excellentcrates.Placeholders.KEY_VALID_CHECK, () -> {
-                        boolean valid = this.isVirtual() || this.plugin.getUuidAntiDupeManager().isValidUnusedUuid(uuid);
-                        return valid ? "✔" : "✖";
-                    })
-                    .writeMeta();
-            }
+            long created = uuid == null ? -1L : this.plugin.getUuidAntiDupeManager().getCreationTime(uuid);
+            ItemReplacer.create(item)
+                .readMeta()
+                .replace(su.nightexpress.excellentcrates.Placeholders.KEY_UUID, () -> uuid == null ? "-" : uuid.toString())
+                .replace(su.nightexpress.excellentcrates.Placeholders.KEY_CREATION_TIME, () -> {
+                    if (created <= 0) return "-";
+                    java.time.format.DateTimeFormatter fmt = java.time.format.DateTimeFormatter.ofPattern(su.nightexpress.excellentcrates.config.Config.LOGS_DATE_FORMAT.get());
+                    return java.time.LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(created), java.time.ZoneId.systemDefault()).format(fmt);
+                })
+                .replace(su.nightexpress.excellentcrates.Placeholders.KEY_VALID_CHECK, () -> {
+                    boolean valid = uuid == null || this.isVirtual() || this.plugin.getUuidAntiDupeManager().isValidUnusedUuid(uuid);
+                    return valid ? "✔" : "✖";
+                })
+                .writeMeta();
         } catch (Throwable ignored) {}
 
         return item;

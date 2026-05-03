@@ -174,8 +174,8 @@ public class KeyManager extends AbstractManager<CratesPlugin> {
         CrateKey key = this.getKeyByItem(item);
         if (key == null) return false;
 
-        // Virtual keys don't need UUID validation
-        if (key.isVirtual()) return true;
+        // Virtual and stackable physical keys don't have per-item UUIDs.
+        if (key.isVirtual() || key.isItemStackable()) return true;
 
         // Physical keys must pass UUID validation
         return this.plugin.getUuidAntiDupeManager().validateKeyUuid(item, player);
@@ -215,7 +215,7 @@ public class KeyManager extends AbstractManager<CratesPlugin> {
         for (ItemStack itemStack : content) {
             CrateKey key = itemStack == null ? null : this.getKeyByItem(itemStack);
             if (key != null && crate.isGoodKey(key)) {
-                if (!key.isVirtual()) {
+                if (!key.isVirtual() && !key.isItemStackable()) {
                     UUID keyUuid = this.plugin.getUuidAntiDupeManager().getKeyUuid(itemStack);
                     if (keyUuid != null && alreadyValidated.contains(keyUuid)) {
                         continue;
@@ -409,6 +409,8 @@ public class KeyManager extends AbstractManager<CratesPlugin> {
         PlayerInventory inventory = player.getInventory();
         int marked = 0;
 
+        if (key.isItemStackable()) return;
+
         for (ItemStack item : inventory.getContents()) {
             if (item == null || marked >= amount) break;
 
@@ -444,12 +446,14 @@ public class KeyManager extends AbstractManager<CratesPlugin> {
         // Player is not on this server: publish a cross-server request.
         return this.plugin.getRedisSyncManager()
             .map(sync -> {
-                // Pre-generate UUIDs for cross-server keys
+                // Pre-generate UUIDs for non-stackable cross-server keys.
                 Set<UUID> keyUuids = new HashSet<>();
-                for (int i = 0; i < amount; i++) {
-                    UUID keyUuid = UUID.randomUUID();
-                    keyUuids.add(keyUuid);
-                    this.plugin.getUuidAntiDupeManager().registerValidUuid(keyUuid);
+                if (!key.isItemStackable()) {
+                    for (int i = 0; i < amount; i++) {
+                        UUID keyUuid = UUID.randomUUID();
+                        keyUuids.add(keyUuid);
+                        this.plugin.getUuidAntiDupeManager().registerValidUuid(keyUuid);
+                    }
                 }
 
                 sync.publishGivePhysicalKeyWithUuid(key.getId(), playerId, amount, keyUuids);
@@ -463,6 +467,11 @@ public class KeyManager extends AbstractManager<CratesPlugin> {
      */
     public void givePhysicalKeysWithUuids(@NotNull Player player, @NotNull CrateKey key, int amount, @NotNull Set<UUID> keyUuids) {
         if (key.isVirtual()) return;
+
+        if (key.isItemStackable()) {
+            this.giveKey(player, key, amount);
+            return;
+        }
 
         this.plugin.getFoliaScheduler().runAtEntity(player, () -> {
             Iterator<UUID> uuidIterator = keyUuids.iterator();

@@ -1,5 +1,6 @@
 package su.nightexpress.excellentcrates.opening;
 
+import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -12,8 +13,11 @@ import su.nightexpress.excellentcrates.config.Config;
 import su.nightexpress.excellentcrates.crate.cost.Cost;
 import su.nightexpress.excellentcrates.crate.impl.Crate;
 import su.nightexpress.excellentcrates.crate.impl.CrateSource;
+import su.nightexpress.excellentcrates.opening.world.WorldOpening;
 import su.nightexpress.excellentcrates.opening.world.provider.DummyProvider;
+import su.nightexpress.excellentcrates.util.pos.WorldPos;
 import su.nightexpress.nightcore.config.FileConfig;
+import su.nightexpress.nightcore.lib.folialib.wrapper.task.WrappedTask;
 import su.nightexpress.nightcore.manager.AbstractManager;
 import su.nightexpress.nightcore.util.FileUtil;
 
@@ -25,6 +29,7 @@ public class OpeningManager extends AbstractManager<CratesPlugin> {
 
     private final Map<String, OpeningProvider> providerByIdMap;
     private final Map<UUID, Opening>           openingByPlayerMap;
+    private final Map<UUID, WrappedTask>       openingTaskByPlayerMap;
 
     private final DummyProvider dummyProvider;
 
@@ -32,6 +37,7 @@ public class OpeningManager extends AbstractManager<CratesPlugin> {
         super(plugin);
         this.providerByIdMap = new HashMap<>();
         this.openingByPlayerMap = new ConcurrentHashMap<>();
+        this.openingTaskByPlayerMap = new ConcurrentHashMap<>();
         this.dummyProvider = new DummyProvider(plugin);
     }
 
@@ -43,11 +49,12 @@ public class OpeningManager extends AbstractManager<CratesPlugin> {
         this.addListener(new OpeningListener(this.plugin, this));
 
         this.startAsyncOpeningTicker();
-        this.plugin.getFoliaScheduler().runTimer(this::tickOpenings, 0L, 1L);
     }
 
     @Override
     protected void onShutdown() {
+        new ArrayList<>(this.openingTaskByPlayerMap.values()).forEach(WrappedTask::cancel);
+        this.openingTaskByPlayerMap.clear();
         this.getOpenings().forEach(Opening::stop);
         this.providerByIdMap.clear();
         this.openingByPlayerMap.clear();
@@ -196,7 +203,71 @@ public class OpeningManager extends AbstractManager<CratesPlugin> {
 
     public void tickOpenings() {
         List<Opening> openingsCopy = new ArrayList<>(this.getOpenings());
-        openingsCopy.forEach(Opening::tick);
+        openingsCopy.forEach(this::tickOpening);
+    }
+
+    private void tickOpening(@NotNull Opening opening) {
+        Player player = opening.getPlayer();
+        UUID playerId = player.getUniqueId();
+
+        if (this.openingByPlayerMap.get(playerId) != opening) {
+            this.cancelOpeningTask(playerId);
+            return;
+        }
+
+        try {
+            opening.tick();
+        } catch (Exception e) {
+            this.plugin.error("Error ticking opening for player " + player.getName() + ": " + e.getMessage());
+            e.printStackTrace();
+            this.stopOpening(player);
+            return;
+        }
+
+        if (!opening.isRunning()) {
+            this.cancelOpeningTask(playerId);
+        }
+    }
+
+    private void startOpeningTicker(@NotNull Opening opening) {
+        UUID playerId = opening.getPlayer().getUniqueId();
+        this.cancelOpeningTask(playerId);
+
+        WrappedTask task = this.createOpeningTask(opening);
+        this.openingTaskByPlayerMap.put(playerId, task);
+    }
+
+    @NotNull
+    private WrappedTask createOpeningTask(@NotNull Opening opening) {
+        Location location = this.getOpeningTickLocation(opening);
+        if (location != null) {
+            return this.plugin.getFoliaScheduler().getFoliaLib().getScheduler().runAtLocationTimer(location, () -> this.tickOpening(opening), 0L, 1L);
+        }
+
+        return this.plugin.getFoliaScheduler().getFoliaLib().getScheduler().runAtEntityTimer(
+            opening.getPlayer(),
+            () -> this.tickOpening(opening),
+            () -> this.removeOpening(opening.getPlayer()),
+            0L,
+            1L
+        );
+    }
+
+    @Nullable
+    private Location getOpeningTickLocation(@NotNull Opening opening) {
+        if (!(opening instanceof WorldOpening)) return null;
+
+        WorldPos blockPos = opening.getSource().getBlockPos();
+        if (blockPos == null || blockPos.isEmpty()) return null;
+
+        return blockPos.toLocation();
+    }
+
+    private void cancelOpeningTask(@NotNull UUID playerId) {
+        WrappedTask task = this.openingTaskByPlayerMap.remove(playerId);
+        if (task == null || task.isCancelled()) return;
+
+        task.cancel();
     }
 
     public boolean isOpening(@NotNull Player player) {
@@ -216,6 +287,7 @@ public class OpeningManager extends AbstractManager<CratesPlugin> {
 
     @Nullable
     public Opening removeOpening(@NotNull Player player) {
+        this.cancelOpeningTask(player.getUniqueId());
         return this.openingByPlayerMap.remove(player.getUniqueId());
     }
 
@@ -237,10 +309,11 @@ public class OpeningManager extends AbstractManager<CratesPlugin> {
     }
 
     public void startOpening(@NotNull Player player, @NotNull Opening opening, boolean instaRoll) {
-        this.openingByPlayerMap.putIfAbsent(player.getUniqueId(), opening);
+        if (this.openingByPlayerMap.putIfAbsent(player.getUniqueId(), opening) != null) return;
 
         opening.start(); // Start ticking
 
         if (instaRoll) opening.instaRoll();
+        if (opening.isRunning()) this.startOpeningTicker(opening);
     }
 }

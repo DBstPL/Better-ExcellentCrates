@@ -2,6 +2,7 @@ package su.nightexpress.excellentcrates.opening.world.impl;
 
 import org.bukkit.Location;
 import org.bukkit.Sound;
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
@@ -160,7 +161,10 @@ public class SimpleRollOpening extends WorldOpening {
         Reward reward = this.isSpinsCompleted() ? this.reward : this.crate.rollReward(this.player);
 
         if (this.rewardDisplay == null) {
-            this.rewardDisplay = player.getWorld().spawn(this.displayLocation, Item.class, item -> item.setVelocity(new Vector()));
+            World world = this.displayLocation.getWorld();
+            if (world == null) return;
+
+            this.rewardDisplay = world.spawn(this.displayLocation, Item.class, item -> item.setVelocity(new Vector()));
             this.rewardDisplay.setPersistent(false);
             this.rewardDisplay.setCustomNameVisible(true);
             this.rewardDisplay.setGravity(false);
